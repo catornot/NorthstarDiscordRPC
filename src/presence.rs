@@ -2,20 +2,18 @@
 
 use rrplug::prelude::*;
 use rrplug::{
-    bindings::squirrelclasstypes::ScriptContext,
-    call_sq_function,
-    high::{squirrel::compile_string, UnsafeHandle},
+    bindings::squirrelclasstypes::ScriptContext, call_sq_function, high::squirrel::compile_string,
 };
 use std::{
     ops::DerefMut,
+    ptr::NonNull,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::presense_bindings::{GameState, GameStateStruct, UIPresenceStruct};
 
 // heartbeat for pulling presence
-pub fn run_presence_updates(sqvm: UnsafeHandle<*mut HSquirrelVM>) {
-    let sqvm = *sqvm.get();
+pub fn run_presence_updates(sqvm: NonNull<HSquirrelVM>) {
     let sq_functions = SQFUNCTIONS.client.wait();
 
     if let Err(err) = compile_string(
@@ -42,10 +40,11 @@ pub fn fetch_presence() -> Result<(), String> {
     let plugin = crate::PLUGIN.wait();
     let mut presence_lock = plugin.presence_data.lock();
     let (cl_presence, ui_presence) = presence_lock.deref_mut();
-    let sqvm = unsafe { sqvm.as_mut().ok_or_else(|| "None sqvm".to_string())? };
+    // TODO: there is a sq function to get the context in rrplug
     let context = unsafe {
-        std::mem::transmute::<_, ScriptContext>(
-            sqvm.sharedState
+        std::mem::transmute::<i32, ScriptContext>(
+            sqvm.as_ref()
+                .sharedState
                 .as_ref()
                 .ok_or_else(|| "None shared state".to_string())?
                 .cSquirrelVM
@@ -71,7 +70,7 @@ pub fn fetch_presence() -> Result<(), String> {
                 *cl_presence = GameStateStruct::get_from_sqvm(
                     sqvm,
                     SQFUNCTIONS.client.wait(),
-                    sqvm._stackbase,
+                    unsafe { sqvm.as_ref() }._stackbase,
                 );
             }
         }
@@ -92,7 +91,7 @@ pub fn fetch_presence() -> Result<(), String> {
                     *ui_presence = UIPresenceStruct::get_from_sqvm(
                         sqvm,
                         SQFUNCTIONS.client.wait(),
-                        sqvm._stackbase,
+                        unsafe { sqvm.as_ref() }._stackbase,
                     );
                 }
             }
@@ -155,8 +154,8 @@ fn on_presence_updated(
                 cl_presence.current_players.try_into().unwrap_or_default(),
                 cl_presence.max_players.try_into().unwrap_or_default(),
             ));
-            activity.details = map_displayname.clone();
-            activity.state = map_displayname.clone();
+            map_displayname.clone_into(&mut activity.details);
+            map_displayname.clone_into(&mut activity.state);
             activity.large_image = Some(cl_presence.map.clone());
             activity.large_text = Some(map_displayname);
             activity.small_image = Some("northstar".to_string());
@@ -165,7 +164,9 @@ fn on_presence_updated(
                 activity.party = None;
                 activity.end = None;
             } else {
-                activity.state = cl_presence.playlist_displayname.clone();
+                cl_presence
+                    .playlist_displayname
+                    .clone_into(&mut activity.state);
                 activity.details = format!(
                     "Score: {} - {} (First to {})",
                     cl_presence.own_score, cl_presence.other_highest_score, cl_presence.max_score,
